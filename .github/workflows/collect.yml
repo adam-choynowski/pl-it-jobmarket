@@ -1,0 +1,55 @@
+name: collect
+
+on:
+  schedule:
+    # 05:00 UTC codziennie. GitHub kolejkuje crony przy dużym obciążeniu,
+    # więc realny start bywa kilkanaście minut później — bez znaczenia,
+    # bo nazwa pliku bierze się z daty UTC w momencie przebiegu.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Dwa przebiegi naraz pisałyby do tego samego pliku dnia i do tej samej gałęzi.
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20 # ~75 s na przebieg, do 3 prób + backoffy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+        # Bez `cache:` i bez pip install — collect.py używa wyłącznie stdlib.
+
+      - name: Collect
+        # Zwykły `run` na `bash -e`: kod wyjścia != 0 zatrzymuje job.
+        # Żadnego `|| true`, `continue-on-error` ani przechwytywania $?.
+        run: python collect.py
+
+      - name: Commit and push if data changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A data
+
+          # --cached, bo interesuje nas to, co faktycznie trafiłoby do commita.
+          if git diff --cached --quiet; then
+            echo "data/ bez zmian — nie tworzę pustego commita"
+            exit 0
+          fi
+
+          git commit -m "data: justjoin snapshot $(date -u +%Y-%m-%d)"
+
+          # Przebieg mógł wystartować przed cudzym pushem na tę gałąź.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
